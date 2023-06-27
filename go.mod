@@ -3,17 +3,16 @@ module github.com/Noksa/operator-home
 go 1.20
 
 require (
-	github.com/go-logr/logr v1.2.4
-	github.com/go-logr/zapr v1.2.4
-	github.com/jessevdk/go-flags v1.5.0
+	github.com/go-logr/zapr v1.2.3
+	github.com/jessevdk/go-flags v1.4.0
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/samber/lo v1.38.1
-	go.uber.org/multierr v1.6.0
+	go.uber.org/multierr v1.8.0
 	go.uber.org/zap v1.24.0
-	k8s.io/api v0.27.3
-	k8s.io/apimachinery v0.27.3
+	k8s.io/api v0.27.2
+	k8s.io/apimachinery v0.27.2
 	k8s.io/client-go v0.27.2
-	sigs.k8s.io/controller-runtime v0.15.0
+	sigs.k8s.io/controller-runtime v0.14.1
 )
 
 require (
@@ -23,6 +22,7 @@ require (
 	github.com/emicklei/go-restful/v3 v3.9.0 // indirect
 	github.com/evanphx/json-patch/v5 v5.6.0 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
+	github.com/go-logr/logr v1.2.4 // indirect
 	github.com/go-openapi/jsonpointer v0.19.6 // indirect
 	github.com/go-openapi/jsonreference v0.20.1 // indirect
 	github.com/go-openapi/swag v0.22.3 // indirect
@@ -49,7 +49,7 @@ require (
 	github.com/prometheus/procfs v0.9.0 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
-	golang.org/x/exp v0.0.0-20220303212507-bbda1eaf7a17 // indirect
+	golang.org/x/exp v0.0.0-20221012211006-4de253d81b95 // indirect
 	golang.org/x/net v0.10.0 // indirect
 	golang.org/x/oauth2 v0.5.0 // indirect
 	golang.org/x/sys v0.8.0 // indirect
