@@ -8,7 +8,9 @@ import (
 var myCache = cache.New(5*time.Minute, 150*time.Second)
 
 func Get[T any](objectName string) (T, bool) {
-	return myCache.Get(objectName)
+	val, _ := myCache.Get(objectName)
+	realVal, ok := val.(T)
+	return realVal, ok
 }
 
 func AddOrReplace[T any](name string, val T, duration time.Duration) {
