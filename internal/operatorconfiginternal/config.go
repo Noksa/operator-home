@@ -6,6 +6,7 @@ import (
 	goflags "github.com/jessevdk/go-flags"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
+	"k8s.io/apimachinery/pkg/util/yaml"
 	"os"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
@@ -13,14 +14,15 @@ import (
 func InstantiateConfiguration(cfg operatorconfig.OperatorConfig) {
 	flagParser := goflags.NewParser(cfg, goflags.IgnoreUnknown|goflags.PassDoubleDash|goflags.HelpFlag)
 	_, firstError := flagParser.Parse()
+
 	lo.Must0(firstError)
 	var zapCfg zap.Config
-	if cfg.LogType() == "prod" {
+	if cfg.GetDefaultConfig().LoggingType == "prod" {
 		zapCfg = zap.NewProductionConfig()
 	} else {
 		zapCfg = zap.NewDevelopmentConfig()
 	}
-	if cfg.LogLevel() == "debug" {
+	if cfg.GetDefaultConfig().LoggingLevel == "debug" {
 		zapCfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
 	} else {
 		zapCfg.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
@@ -39,4 +41,16 @@ func InstantiateConfiguration(cfg operatorconfig.OperatorConfig) {
 	}
 	mainLogger.WithValues("Commit sha", commitSha, "Build date", buildDate).Info("Operator info")
 	ctrl.SetLogger(mainLogger)
+	if cfg.GetDefaultConfig().ConfigPath != "" {
+		b, err := os.ReadFile(cfg.GetDefaultConfig().ConfigPath)
+		if err != nil {
+			mainLogger.Error(err, "Couldn't read the additional operator config file")
+			panic(err)
+		}
+		err = yaml.Unmarshal(b, &cfg)
+		if err != nil {
+			mainLogger.Error(err, "Couldn't unmarshal the additional operator config file. Check that the config is yaml and correct")
+			panic(err)
+		}
+	}
 }

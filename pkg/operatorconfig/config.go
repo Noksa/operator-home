@@ -1,8 +1,7 @@
 package operatorconfig
 
 type OperatorConfig interface {
-	LogLevel() string
-	LogType() string
+	GetDefaultConfig() DefaultConfig
 }
 
 type DefaultConfig struct {
@@ -11,15 +10,11 @@ type DefaultConfig struct {
 	EnableLeaderElection bool   `long:"enable-leader-election" description:"LeaderElection configMap name"`
 	LoggingLevel         string `long:"loglevel" description:"Can be debug or info" default:"info"`
 	LoggingType          string `long:"logtype" description:"Can be prod or dev" default:"dev"`
-	ConfigPath           string `long:"config" description:"The path to the operator's config'" default:"/etc/k8s-operator/config.yaml"`
+	ConfigPath           string `long:"config" description:"The path to an additional custom operator's config'" default:""`
 	LocalEnv             bool   `long:"localEnv" description:"DEBUG ONLY!"`
 	Kubeconfig           string `long:"kubeconfig" description:"used locally to find and use an approptiate kubeconfig file when you have a lot of them. Optional"`
 }
 
-func (d DefaultConfig) LogLevel() string {
-	return d.LoggingLevel
-}
-
-func (d DefaultConfig) LogType() string {
-	return d.LoggingType
+func (d DefaultConfig) GetDefaultConfig() DefaultConfig {
+	return d
 }
