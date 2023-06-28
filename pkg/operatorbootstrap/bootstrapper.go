@@ -2,9 +2,13 @@ package operatorbootstrap
 
 import (
 	"context"
+	"github.com/Noksa/operator-home/internal/operatorbootstrapinternal"
+	"github.com/Noksa/operator-home/internal/operatorconfiginternal"
+	"github.com/Noksa/operator-home/pkg/operatorconfig"
 	"github.com/samber/lo"
 	"os"
 	"os/signal"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"syscall"
@@ -12,6 +16,7 @@ import (
 
 type Bootstrapper struct {
 	mgr manager.Manager
+	ctx context.Context
 }
 
 var cancelled = false
@@ -20,13 +25,19 @@ func Cancelled() bool {
 	return cancelled
 }
 
-func NewBootstrapper(mgr manager.Manager) *Bootstrapper {
-	b := &Bootstrapper{mgr: mgr}
+func NewBootstrapper(ctx context.Context, operatorCfg operatorconfig.OperatorConfig, opts ctrl.Options, mgrFunc operatorbootstrapinternal.ManagerFunc) *Bootstrapper {
+	operatorconfiginternal.InstantiateConfiguration(operatorCfg)
+	mgr := operatorbootstrapinternal.NewManager(opts, mgrFunc)
+	b := &Bootstrapper{mgr: mgr, ctx: ctx}
 	return b
 }
 
 func (b *Bootstrapper) GetMgr() manager.Manager {
 	return b.mgr
+}
+
+func (b *Bootstrapper) Context() context.Context {
+	return b.ctx
 }
 
 func (b *Bootstrapper) WithControllers(controllers ...KubernetesOperator) *Bootstrapper {
@@ -36,10 +47,10 @@ func (b *Bootstrapper) WithControllers(controllers ...KubernetesOperator) *Boots
 	return b
 }
 
-func (b *Bootstrapper) Run(ctx context.Context) {
+func (b *Bootstrapper) Run() {
 	lo.Must0(b.GetMgr().AddHealthzCheck("healthz", healthz.Ping), "unable to setup healthz")
 	lo.Must0(b.GetMgr().AddReadyzCheck("readyz", healthz.Ping), "unable to setup readyz")
-	lo.Must0(b.mgr.Start(ctx))
+	lo.Must0(b.mgr.Start(b.ctx))
 }
 
 func CustomSignalsHandler(additionalActionBeforeCancel func()) context.Context {
