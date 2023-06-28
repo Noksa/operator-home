@@ -25,9 +25,9 @@ func Cancelled() bool {
 	return cancelled
 }
 
-func NewBootstrapper(ctx context.Context, operatorCfg operatorconfig.OperatorConfig, opts ctrl.Options, mgrFunc operatorbootstrapinternal.ManagerFunc) *Bootstrapper {
+func NewBootstrapper(ctx context.Context, operatorCfg operatorconfig.OperatorConfig, newOpts func() ctrl.Options, mgrFunc operatorbootstrapinternal.ManagerFunc) *Bootstrapper {
 	operatorconfiginternal.InstantiateConfiguration(operatorCfg)
-	mgr := operatorbootstrapinternal.NewManager(opts, mgrFunc)
+	mgr := operatorbootstrapinternal.NewManager(newOpts(), mgrFunc)
 	b := &Bootstrapper{mgr: mgr, ctx: ctx}
 	return b
 }
