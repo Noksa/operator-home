@@ -110,18 +110,11 @@ func RunCommandInPodWithContextAndTimeout(ctx context.Context, timeout time.Dura
 			Stderr: &stderr,
 			Tty:    false,
 		})
-		if err != nil {
-			mErr = fmt.Errorf("error in Stream: %v\n\nstderr:\n%v", err, stderr.String())
-			result = stdout.String()
-			return
-		}
-
-		if stderr.String() != "" {
-			mErr = fmt.Errorf("stderr: %v", stderr.String())
-			result = stdout.String()
-			return
-		}
 		result = stdout.String()
+		if err != nil {
+			mErr = fmt.Errorf("error in Stream: %v\n\nstderr:\n%v\n\nstdout:\n%v", err.Error(), stderr.String(), result)
+			return
+		}
 	}()
 	<-myCtx.Done()
 	if myCtx.Err() != nil && !strings.Contains(myCtx.Err().Error(), "context canceled") {
