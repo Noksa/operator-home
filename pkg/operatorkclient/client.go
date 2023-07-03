@@ -30,7 +30,11 @@ func GetClientConfig() *rest.Config {
 	if config != nil {
 		return config
 	}
-	config = ctrl.GetConfigOrDie()
+	var err error
+	config, err = ctrl.GetConfig()
+	if err != nil {
+		panic(fmt.Sprintf("couldn't create kube config: %v", err.Error()))
+	}
 	return config
 }
 
