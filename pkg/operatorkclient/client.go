@@ -38,6 +38,21 @@ func GetClientConfig() *rest.Config {
 	return config
 }
 
+type RunCommandInPodOptions struct {
+	// Background context will be used if not set
+	Context context.Context
+	// Default value is 10 seconds if not set
+	Timeout time.Duration
+	// Command to be run
+	Command       string
+	PodName       string
+	PodNamespace  string
+	ContainerName string
+	Stdin         io.Reader
+	Stderr        io.Writer
+	Stdout        io.Writer
+}
+
 func GetPodContainerLogs(ctx context.Context, namespace string, podName string, containerName string, sinceTime *metav1.Time) (string, error) {
 	podLogsRequest := clientSet.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
 		Container: containerName,
@@ -67,16 +82,16 @@ func GetPodContainerLogs(ctx context.Context, namespace string, podName string, 
 	return "", fmt.Errorf("timed out in GetPodContainerLogs")
 }
 
-func RunCommandInPodWithContextAndTimeout(ctx context.Context, timeout time.Duration, command, containerName, podName, namespace string, stdin io.Reader) (string, error) {
-	if timeout < time.Millisecond*1 {
-		timeout = time.Millisecond * 1
+func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, error) {
+	if options.Timeout < time.Millisecond*1 {
+		options.Timeout = time.Second * 10
 	}
-	myCtx, cancel := context.WithTimeout(ctx, timeout)
+	myCtx, cancel := context.WithTimeout(options.Context, options.Timeout)
 	var mErr error
 	var result string
 	go func() {
 		defer cancel()
-		objName := fmt.Sprintf("%v-%v-%v", namespace, podName, containerName)
+		objName := fmt.Sprintf("%v-%v-%v", options.PodNamespace, options.PodName, options.ContainerName)
 		m.Lock()
 		mutexForObject, found := operatorcache.Get[*sync.Mutex](objName)
 		if !found {
@@ -88,12 +103,12 @@ func RunCommandInPodWithContextAndTimeout(ctx context.Context, timeout time.Dura
 		defer mutexForObject.Unlock()
 		req := clientSet.CoreV1().RESTClient().Post().
 			Resource("pods").
-			Name(podName).
-			Namespace(namespace).
+			Name(options.PodName).
+			Namespace(options.PodNamespace).
 			SubResource("exec").VersionedParams(&corev1.PodExecOptions{
-			Command:   []string{"/bin/sh", "-c", command},
-			Container: containerName,
-			Stdin:     stdin != nil,
+			Command:   []string{"/bin/sh", "-c", options.Command},
+			Container: options.ContainerName,
+			Stdin:     options.Stdin != nil,
 			Stdout:    true,
 			Stderr:    true,
 		}, scheme.ParameterCodec)
@@ -107,16 +122,31 @@ func RunCommandInPodWithContextAndTimeout(ctx context.Context, timeout time.Dura
 			mErr = fmt.Errorf("error while creating Executor: %v", err)
 			return
 		}
-		var stdout, stderr bytes.Buffer
+		stdoutBuffer := &bytes.Buffer{}
+		stderrBuffer := &bytes.Buffer{}
+		var stdoutMultiWriter, stderrMultiWriter io.Writer
+		if options.Stdout != nil {
+			stdoutMultiWriter = io.MultiWriter(stdoutBuffer, options.Stdout)
+		} else {
+			stdoutMultiWriter = stdoutBuffer
+		}
+		if options.Stderr != nil {
+			stderrMultiWriter = io.MultiWriter(stderrBuffer, options.Stderr)
+		} else {
+			stderrMultiWriter = stderrBuffer
+		}
+
 		err = exec.StreamWithContext(myCtx, remotecommand.StreamOptions{
-			Stdin:  stdin,
-			Stdout: &stdout,
-			Stderr: &stderr,
+			Stdin:  options.Stdin,
+			Stdout: stdoutMultiWriter,
+			Stderr: stderrMultiWriter,
 			Tty:    false,
 		})
-		result = stdout.String()
+		result = stdoutBuffer.String()
+		errResult := stderrBuffer.String()
+		stdoutBuffer = nil
 		if err != nil {
-			mErr = fmt.Errorf("error in Stream: %v\n\nstderr:\n%v\n\nstdout:\n%v", err.Error(), stderr.String(), result)
+			mErr = fmt.Errorf("error in Stream: %v\n\nstderr:\n%v\n\nstdout:\n%v", err.Error(), errResult, result)
 			return
 		}
 	}()
@@ -125,6 +155,20 @@ func RunCommandInPodWithContextAndTimeout(ctx context.Context, timeout time.Dura
 		mErr = multierr.Append(mErr, myCtx.Err())
 	}
 	return result, mErr
+}
+
+func RunCommandInPodWithContextAndTimeout(ctx context.Context, timeout time.Duration, command, containerName, podName, namespace string, stdin io.Reader) (string, error) {
+	return RunCommandInPodWithOptions(RunCommandInPodOptions{
+		Context:       ctx,
+		Timeout:       timeout,
+		Command:       command,
+		PodName:       podName,
+		PodNamespace:  namespace,
+		ContainerName: containerName,
+		Stdin:         stdin,
+		Stderr:        nil,
+		Stdout:        nil,
+	})
 }
 
 // RunCommandInPodWithTimeout runs a command in a container with specified timeout.
