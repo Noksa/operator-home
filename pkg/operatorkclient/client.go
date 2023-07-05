@@ -82,13 +82,14 @@ func GetPodContainerLogs(ctx context.Context, namespace string, podName string, 
 	return "", fmt.Errorf("timed out in GetPodContainerLogs")
 }
 
-func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, error) {
+// RunCommandInPodWithOptions returns stdout, stderr, err after running a command
+func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string, error) {
 	if options.Timeout < time.Millisecond*1 {
 		options.Timeout = time.Second * 10
 	}
 	myCtx, cancel := context.WithTimeout(options.Context, options.Timeout)
 	var mErr error
-	var result string
+	var stdout, stderr string
 	go func() {
 		defer cancel()
 		objName := fmt.Sprintf("%v-%v-%v", options.PodNamespace, options.PodName, options.ContainerName)
@@ -142,22 +143,24 @@ func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, error) 
 			Stderr: stderrMultiWriter,
 			Tty:    false,
 		})
-		result = stdoutBuffer.String()
-		errResult := stderrBuffer.String()
+		stdout = stdoutBuffer.String()
+		stderr = stderrBuffer.String()
 		stdoutBuffer = nil
+		stderrBuffer = nil
 		if err != nil {
-			mErr = fmt.Errorf("error in Stream: %v\n\nstderr:\n%v\n\nstdout:\n%v", err.Error(), errResult, result)
+			mErr = fmt.Errorf("'%v' command failed: %v", options.Command, err.Error())
 			return
 		}
 	}()
 	<-myCtx.Done()
 	if myCtx.Err() != nil && !strings.Contains(myCtx.Err().Error(), "context canceled") {
+		mErr = multierr.Append(mErr, fmt.Errorf("context canceled"))
 		mErr = multierr.Append(mErr, myCtx.Err())
 	}
-	return result, mErr
+	return stdout, stderr, mErr
 }
 
-func RunCommandInPodWithContextAndTimeout(ctx context.Context, timeout time.Duration, command, containerName, podName, namespace string, stdin io.Reader) (string, error) {
+func RunCommandInPodWithContextAndTimeout(ctx context.Context, timeout time.Duration, command, containerName, podName, namespace string, stdin io.Reader) (string, string, error) {
 	return RunCommandInPodWithOptions(RunCommandInPodOptions{
 		Context:       ctx,
 		Timeout:       timeout,
@@ -173,13 +176,13 @@ func RunCommandInPodWithContextAndTimeout(ctx context.Context, timeout time.Dura
 
 // RunCommandInPodWithTimeout runs a command in a container with specified timeout.
 // Timeout can't be less 1ms
-func RunCommandInPodWithTimeout(timeout time.Duration, command, containerName, podName, namespace string, stdin io.Reader) (string, error) {
+func RunCommandInPodWithTimeout(timeout time.Duration, command, containerName, podName, namespace string, stdin io.Reader) (string, string, error) {
 	ctx := context.Background()
 	return RunCommandInPodWithContextAndTimeout(ctx, timeout, command, containerName, podName, namespace, stdin)
 }
 
 // RunCommandInPod runs a command in a container with default 10 sec timeout
-func RunCommandInPod(command, containerName, podName, namespace string, stdin io.Reader) (string, error) {
+func RunCommandInPod(command, containerName, podName, namespace string, stdin io.Reader) (string, string, error) {
 	return RunCommandInPodWithTimeout(time.Second*10, command, containerName, podName, namespace, stdin)
 }
 
