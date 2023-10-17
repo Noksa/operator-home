@@ -2,6 +2,8 @@ package operatorconfig
 
 type OperatorConfig interface {
 	GetDefaultConfig() DefaultConfig
+	// Initialize may help to do additional initialization during configuration instantiation
+	Initialize() error
 }
 
 type DefaultConfig struct {

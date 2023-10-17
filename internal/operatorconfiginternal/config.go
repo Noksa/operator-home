@@ -1,17 +1,24 @@
 package operatorconfiginternal
 
 import (
+	"fmt"
 	"github.com/Noksa/operator-home/pkg/operatorconfig"
 	"github.com/go-logr/zapr"
 	goflags "github.com/jessevdk/go-flags"
 	"github.com/samber/lo"
 	"go.uber.org/zap"
-	"k8s.io/apimachinery/pkg/util/yaml"
+	yamlv2 "gopkg.in/yaml.v2"
 	"os"
+	"reflect"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 func InstantiateConfiguration(cfg operatorconfig.OperatorConfig) {
+	// pointer check
+	kind := reflect.ValueOf(cfg).Kind()
+	if reflect.ValueOf(cfg).Kind() != reflect.Ptr {
+		panic(fmt.Sprintf("InstantiateConfiguration required pointer. Got %v", kind))
+	}
 	flagParser := goflags.NewParser(cfg, goflags.IgnoreUnknown|goflags.PassDoubleDash|goflags.HelpFlag)
 	_, firstError := flagParser.Parse()
 
@@ -47,10 +54,14 @@ func InstantiateConfiguration(cfg operatorconfig.OperatorConfig) {
 			mainLogger.Error(err, "Couldn't read the additional operator config file")
 			panic(err)
 		}
-		err = yaml.Unmarshal(b, &cfg)
+		err = yamlv2.Unmarshal(b, cfg)
 		if err != nil {
 			mainLogger.Error(err, "Couldn't unmarshal the additional operator config file. Check that the config is yaml and correct")
 			panic(err)
+		}
+		err = cfg.Initialize()
+		if err != nil {
+			panic(fmt.Sprintf("couldn't initialize config: %v", err))
 		}
 	}
 }
