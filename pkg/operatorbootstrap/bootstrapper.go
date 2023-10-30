@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"syscall"
 )
@@ -58,12 +59,20 @@ func CustomSignalsHandler(additionalActionBeforeCancel func()) context.Context {
 	c := make(chan os.Signal, 2)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
-		<-c
+		s := <-c
+		logger := log.Log.WithName("CustomSignalsHandler")
+		if s != nil {
+			logger.WithValues("Signal", s.String()).Info("Received the signal")
+		}
 		cancelled = true
+		if additionalActionBeforeCancel != nil {
+			logger.Info("Running additional actions before exit")
+		}
 		additionalActionBeforeCancel()
+		logger.Info("Cancelling context")
 		cancel()
 		<-c
-		os.Exit(1) // second signal. Exit directly.
+		os.Exit(999) // second signal. Exit right now.
 	}()
 
 	return ctx
