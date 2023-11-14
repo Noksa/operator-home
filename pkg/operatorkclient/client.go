@@ -88,10 +88,9 @@ func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string,
 		options.Timeout = time.Second * 10
 	}
 	myCtx, cancel := context.WithTimeout(options.Context, options.Timeout)
-	var mErr error
 	var stdout, stderr string
+	errChan := make(chan error)
 	go func() {
-		defer cancel()
 		objName := fmt.Sprintf("%v-%v-%v", options.PodNamespace, options.PodName, options.ContainerName)
 		m.Lock()
 		mutexForObject, found := operatorcache.Get[*sync.Mutex](objName)
@@ -120,7 +119,7 @@ func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string,
 
 		exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
 		if err != nil {
-			mErr = fmt.Errorf("error while creating Executor: %v", err)
+			errChan <- fmt.Errorf("error while creating Executor: %v", err)
 			return
 		}
 		stdoutBuffer := &bytes.Buffer{}
@@ -148,15 +147,22 @@ func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string,
 		stdoutBuffer = nil
 		stderrBuffer = nil
 		if err != nil {
-			mErr = fmt.Errorf("'%v' command failed: %v", options.Command, err.Error())
+			errChan <- fmt.Errorf("'%v' command failed: %v", options.Command, err.Error())
 			return
 		}
+		errChan <- nil
 	}()
-	<-myCtx.Done()
-	if myCtx.Err() != nil && !strings.Contains(myCtx.Err().Error(), "context canceled") {
-		mErr = multierr.Append(mErr, fmt.Errorf("context canceled"))
+
+	var mErr error
+	select {
+	case <-myCtx.Done():
 		mErr = multierr.Append(mErr, myCtx.Err())
+		break
+	case err := <-errChan:
+		mErr = multierr.Append(mErr, err)
+		break
 	}
+	cancel()
 	return stdout, stderr, mErr
 }
 
