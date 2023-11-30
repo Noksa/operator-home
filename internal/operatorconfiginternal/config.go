@@ -3,14 +3,16 @@ package operatorconfiginternal
 import (
 	"fmt"
 	"github.com/Noksa/operator-home/pkg/operatorconfig"
-	"github.com/go-logr/zapr"
+	"github.com/go-logr/logr"
+	"github.com/go-logr/zerologr"
 	goflags "github.com/jessevdk/go-flags"
+	"github.com/rs/zerolog"
 	"github.com/samber/lo"
-	"go.uber.org/zap"
 	yamlv2 "gopkg.in/yaml.v2"
 	"os"
 	"reflect"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"time"
 )
 
 func InstantiateConfiguration(cfg operatorconfig.OperatorConfig) {
@@ -23,21 +25,30 @@ func InstantiateConfiguration(cfg operatorconfig.OperatorConfig) {
 	_, firstError := flagParser.Parse()
 
 	lo.Must0(firstError)
-	var zapCfg zap.Config
-	if cfg.GetDefaultConfig().LoggingType == "prod" {
-		zapCfg = zap.NewProductionConfig()
+	var mainLogger logr.Logger
+	if operatorconfig.CustomLoggerSetup != nil {
+		mainLogger = operatorconfig.CustomLoggerSetup()
 	} else {
-		zapCfg = zap.NewDevelopmentConfig()
+		zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
+		zerologr.NameFieldName = "source"
+		zerologr.VerbosityFieldName = ""
+		zerologr.NameSeparator = "/"
+		output := zerolog.ConsoleWriter{
+			Out:        os.Stdout,
+			TimeFormat: time.StampMilli,
+		}
+		zl := zerolog.New(output).With().Timestamp().Logger()
+		if cfg.GetDefaultConfig().LoggingType == "prod" {
+			zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+			zl = zerolog.New(os.Stdout).With().Timestamp().Logger()
+		}
+		if cfg.GetDefaultConfig().LoggingLevel == "debug" {
+			zerologr.SetMaxV(1)
+		} else {
+			zerologr.SetMaxV(0)
+		}
+		mainLogger = zerologr.New(&zl)
 	}
-	if cfg.GetDefaultConfig().LoggingLevel == "debug" {
-		zapCfg.Level = zap.NewAtomicLevelAt(zap.DebugLevel)
-	} else {
-		zapCfg.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
-	}
-	zapCfg.DisableCaller = true
-	zapLogger, err := zapCfg.Build()
-	lo.Must0(err)
-	mainLogger := zapr.NewLogger(zapLogger)
 	commitSha := os.Getenv("GIT_COMMIT_SHA")
 	if commitSha == "" {
 		commitSha = "local-build"
@@ -46,7 +57,8 @@ func InstantiateConfiguration(cfg operatorconfig.OperatorConfig) {
 	if buildDate == "" {
 		buildDate = "unknown"
 	}
-	mainLogger.WithValues("Commit sha", commitSha, "Build date", buildDate).Info("Operator info")
+	mainLogger.WithValues("Commit sha", commitSha, "Build date", buildDate, "Log level", cfg.GetDefaultConfig().LoggingLevel, "Log type", cfg.GetDefaultConfig().LoggingType).Info("Operator info")
+	mainLogger.V(1).Info("Debug logging activated")
 	ctrl.SetLogger(mainLogger)
 	if cfg.GetDefaultConfig().ConfigPath != "" {
 		b, err := os.ReadFile(cfg.GetDefaultConfig().ConfigPath)

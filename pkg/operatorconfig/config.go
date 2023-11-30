@@ -1,5 +1,7 @@
 package operatorconfig
 
+import "github.com/go-logr/logr"
+
 type OperatorConfig interface {
 	GetDefaultConfig() DefaultConfig
 	// Initialize may help to do additional initialization during configuration instantiation
@@ -20,3 +22,5 @@ type DefaultConfig struct {
 func (d DefaultConfig) GetDefaultConfig() DefaultConfig {
 	return d
 }
+
+var CustomLoggerSetup func() logr.Logger
