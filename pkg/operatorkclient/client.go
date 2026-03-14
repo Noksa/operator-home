@@ -54,6 +54,12 @@ func getClientSet() kubernetes.Interface {
 	return clientSet
 }
 
+// GetClientSet returns the lazily-initialized (or overridden) kubernetes.Interface client,
+// allowing downstream projects to reuse the same client instance.
+func GetClientSet() kubernetes.Interface {
+	return getClientSet()
+}
+
 func GetClientConfig() *rest.Config {
 	if config != nil {
 		return config
