@@ -46,8 +46,12 @@ stdout, stderr, err := operatorkclient.RunCommandInPod(cmd, container, pod, ns, 
 client, err := operatorkclient.NewClient()                       // from kubeconfig / in-cluster
 client, err := operatorkclient.NewClientFromConfig(cfg)          // from a specific rest.Config
 
-// Option B: lazy singleton (convenient for operators that don't need multiple clients)
-client, err := operatorkclient.DefaultClient()
+// Option B: lazy singleton — panics if config is unavailable (same as ctrl.GetConfigOrDie)
+client := operatorkclient.DefaultClient()
+
+// Option C: lazy singleton with custom config (set before first DefaultClient call)
+operatorkclient.SetDefaultConfig(cfg)                            // must be called before DefaultClient()
+client := operatorkclient.DefaultClient()                        // uses the provided cfg
 
 // All operations are methods
 cfg  := client.Config()
@@ -81,7 +85,7 @@ client := operatorkclient.NewClientFromClientSet(
 |---------------------------------------|----------------------------------------------|
 | `SetClientSet(cs)`                    | `NewClientFromClientSet(cs, dyn, cfg)`       |
 | `GetClientSet()`                      | `client.ClientSet()`                         |
-| `SetConfigProvider(fn)`               | `NewClientFromConfig(fn())`                  |
+| `SetConfigProvider(fn)`               | `SetDefaultConfig(fn())` or `NewClientFromConfig(fn())` |
 | `GetClientConfig()`                   | `client.Config()`                            |
 | `InitializeOperatorCoreClientSet()`   | Removed — initialization is in constructors  |
 | `ResetForTesting()`                   | Not needed — create a new `*Client` per test |
@@ -162,7 +166,8 @@ b := operatorbootstrap.NewBootstrapper(ctx, cfg, optsFunc, mgrFunc)
 
 1. Replace all `operatorkclient.<Function>(...)` calls with `client.<Method>(...)` on a `*Client` instance
 2. Choose your client creation strategy: `NewClient()`, `NewClientFromConfig(cfg)`, or `DefaultClient()`
-3. In tests, use `NewClientFromClientSet(cs, dyn, cfg)` — no more `ResetForTesting`
+3. If using `DefaultClient()` with a custom config, call `SetDefaultConfig(cfg)` early in `main()` before any `DefaultClient()` call
+4. In tests, use `NewClientFromClientSet(cs, dyn, cfg)` — no more `ResetForTesting`
 4. Replace `CustomSignalsHandler(fn)` with `bootstrapper.SetupSignalHandler(fn)`
 5. Replace `operatorbootstrap.Cancelled()` with `bootstrapper.Cancelled()`
 6. Move `operatorconfig.CustomLoggerSetup` into your config struct's `CustomLoggerSetup` field

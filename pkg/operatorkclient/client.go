@@ -27,16 +27,48 @@ import (
 
 const debug = false
 
-// defaultClient is lazily initialized on the first call to DefaultClient().
-var defaultClient = sync.OnceValues(func() (*Client, error) {
-	return NewClient()
-})
+var (
+	defaultOnce   sync.Once
+	defaultCfg    *rest.Config
+	defaultInst   *Client
+	defaultSealed bool
+	defaultMu     sync.Mutex
+)
 
-// DefaultClient returns a lazily-initialized Client using the in-cluster or
-// kubeconfig-based rest.Config. The same instance is returned on every call.
-// For explicit control over configuration, use NewClient or NewClientFromConfig.
-func DefaultClient() (*Client, error) {
-	return defaultClient()
+// SetDefaultConfig sets the rest.Config that DefaultClient will use.
+// Must be called before the first call to DefaultClient; panics otherwise.
+// If never called, DefaultClient falls back to ctrl.GetConfig().
+func SetDefaultConfig(cfg *rest.Config) {
+	defaultMu.Lock()
+	defer defaultMu.Unlock()
+	if defaultSealed {
+		panic("operatorkclient: SetDefaultConfig called after DefaultClient was already initialized")
+	}
+	defaultCfg = cfg
+}
+
+// DefaultClient returns a lazily-initialized singleton Client.
+// On first call it uses the config from SetDefaultConfig if one was
+// provided, otherwise it falls back to the in-cluster / kubeconfig config
+// from controller-runtime. Panics if the client cannot be created.
+func DefaultClient() *Client {
+	defaultOnce.Do(func() {
+		defaultMu.Lock()
+		defaultSealed = true
+		cfg := defaultCfg
+		defaultMu.Unlock()
+
+		var err error
+		if cfg != nil {
+			defaultInst, err = NewClientFromConfig(cfg)
+		} else {
+			defaultInst, err = NewClient()
+		}
+		if err != nil {
+			panic(fmt.Sprintf("operatorkclient: failed to create default client: %v", err))
+		}
+	})
+	return defaultInst
 }
 
 // Client wraps a typed Kubernetes clientset, a dynamic client, cached
