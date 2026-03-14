@@ -21,3 +21,10 @@
 go.work
 
 .idea/
+
+# Cyberpunk theme cache
+.cyber.sh
+
+# Coverage reports
+cover.out
+cover.html

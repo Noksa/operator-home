@@ -80,7 +80,7 @@ func Decompress(src io.Reader, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 
 	tr := tar.NewReader(zr)
 	header, err := tr.Next()
@@ -97,7 +97,7 @@ func Decompress(src io.Reader, dest string) error {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		_, err = io.Copy(f, tr)
 		return err
 	}
@@ -119,10 +119,10 @@ func Decompress(src io.Reader, dest string) error {
 				return err
 			}
 			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
+				_ = f.Close()
 				return err
 			}
-			f.Close()
+			_ = f.Close()
 		}
 
 		header, err = tr.Next()

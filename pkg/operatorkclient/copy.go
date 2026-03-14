@@ -25,7 +25,7 @@ func CopyFileToContainerInPod(ctx context.Context, pod *corev1.Pod, containerNam
 	}
 
 	dir := filepath.Dir(destPath)
-	req := clientSet.CoreV1().RESTClient().Post().
+	req := getClientSet().CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(pod.Name).
 		Namespace(pod.Namespace).
@@ -66,7 +66,7 @@ func CopyFileFromContainerInPod(ctx context.Context, pod *corev1.Pod, containerN
 	srcPath = filepath.Clean(srcPath)
 	destPath = filepath.Clean(destPath)
 
-	req := clientSet.CoreV1().RESTClient().Post().
+	req := getClientSet().CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(pod.Name).
 		Namespace(pod.Namespace).

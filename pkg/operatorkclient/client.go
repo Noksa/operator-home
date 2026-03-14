@@ -5,9 +5,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/Noksa/operator-home/internal/operatorcache"
 	"go.uber.org/multierr"
-	"io"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -15,16 +19,40 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"strings"
-	"sync"
-	"time"
 )
 
 const debug = false
 
-var clientSet *kubernetes.Clientset
+var clientSet kubernetes.Interface
 var config *rest.Config
 var m sync.Mutex
+var initOnce sync.Once
+var overridden bool
+
+// SetClientSet allows injecting a custom kubernetes.Interface (e.g. fake.NewClientset())
+// for testing. When set, lazy initialization is skipped entirely.
+func SetClientSet(client kubernetes.Interface) {
+	m.Lock()
+	defer m.Unlock()
+	clientSet = client
+	overridden = true
+}
+
+// getClientSet returns the kubernetes client, initializing it lazily on first call.
+// If SetClientSet was called, the injected client is returned without initialization.
+func getClientSet() kubernetes.Interface {
+	m.Lock()
+	if overridden {
+		cs := clientSet
+		m.Unlock()
+		return cs
+	}
+	m.Unlock()
+	initOnce.Do(func() {
+		clientSet = kubernetes.NewForConfigOrDie(GetClientConfig())
+	})
+	return clientSet
+}
 
 func GetClientConfig() *rest.Config {
 	if config != nil {
@@ -54,7 +82,7 @@ type RunCommandInPodOptions struct {
 }
 
 func GetPodContainerLogs(ctx context.Context, namespace string, podName string, containerName string, sinceTime *metav1.Time) (string, error) {
-	podLogsRequest := clientSet.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
+	podLogsRequest := getClientSet().CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
 		Container: containerName,
 		SinceTime: sinceTime,
 	})
@@ -62,7 +90,7 @@ func GetPodContainerLogs(ctx context.Context, namespace string, podName string, 
 	if err != nil {
 		return "", err
 	}
-	defer logStream.Close()
+	defer func() { _ = logStream.Close() }()
 	builder := strings.Builder{}
 	reader := bufio.NewScanner(logStream)
 	var line string
@@ -74,7 +102,8 @@ func GetPodContainerLogs(ctx context.Context, namespace string, podName string, 
 		default:
 			for reader.Scan() {
 				line = reader.Text()
-				builder.WriteString(fmt.Sprintf("%v\n", line))
+				builder.WriteString(line)
+				builder.WriteByte('\n')
 			}
 			return builder.String(), nil
 		}
@@ -88,8 +117,12 @@ func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string,
 		options.Timeout = time.Second * 10
 	}
 	myCtx, cancel := context.WithTimeout(options.Context, options.Timeout)
-	var stdout, stderr string
-	errChan := make(chan error)
+	type execResult struct {
+		stdout string
+		stderr string
+		err    error
+	}
+	resultChan := make(chan execResult, 1)
 	go func() {
 		objName := fmt.Sprintf("%v-%v-%v", options.PodNamespace, options.PodName, options.ContainerName)
 		m.Lock()
@@ -101,7 +134,7 @@ func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string,
 		m.Unlock()
 		mutexForObject.Lock()
 		defer mutexForObject.Unlock()
-		req := clientSet.CoreV1().RESTClient().Post().
+		req := getClientSet().CoreV1().RESTClient().Post().
 			Resource("pods").
 			Name(options.PodName).
 			Namespace(options.PodNamespace).
@@ -119,7 +152,7 @@ func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string,
 
 		exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
 		if err != nil {
-			errChan <- fmt.Errorf("error while creating Executor: %v", err)
+			resultChan <- execResult{err: fmt.Errorf("error while creating Executor: %v", err)}
 			return
 		}
 		stdoutBuffer := &bytes.Buffer{}
@@ -142,25 +175,26 @@ func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string,
 			Stderr: stderrMultiWriter,
 			Tty:    false,
 		})
-		stdout = stdoutBuffer.String()
-		stderr = stderrBuffer.String()
+		so := stdoutBuffer.String()
+		se := stderrBuffer.String()
 		stdoutBuffer = nil
 		stderrBuffer = nil
 		if err != nil {
-			errChan <- fmt.Errorf("'%v' command failed: %v", options.Command, err.Error())
+			resultChan <- execResult{stdout: so, stderr: se, err: fmt.Errorf("'%v' command failed: %v", options.Command, err.Error())}
 			return
 		}
-		errChan <- nil
+		resultChan <- execResult{stdout: so, stderr: se}
 	}()
 
 	var mErr error
+	var stdout, stderr string
 	select {
 	case <-myCtx.Done():
 		mErr = multierr.Append(mErr, myCtx.Err())
-		break
-	case err := <-errChan:
-		mErr = multierr.Append(mErr, err)
-		break
+	case res := <-resultChan:
+		stdout = res.stdout
+		stderr = res.stderr
+		mErr = multierr.Append(mErr, res.err)
 	}
 	cancel()
 	return stdout, stderr, mErr
@@ -192,13 +226,9 @@ func RunCommandInPod(command, containerName, podName, namespace string, stdin io
 	return RunCommandInPodWithTimeout(time.Second*10, command, containerName, podName, namespace, stdin)
 }
 
+// InitializeOperatorCoreClientSet eagerly initializes the client set.
+// This is kept for backward compatibility but is no longer required —
+// the client is initialized lazily on first use.
 func InitializeOperatorCoreClientSet() {
-	if clientSet != nil {
-		return
-	}
-	clientSet = kubernetes.NewForConfigOrDie(GetClientConfig())
-}
-
-func init() {
-	InitializeOperatorCoreClientSet()
+	getClientSet()
 }
