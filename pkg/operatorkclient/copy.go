@@ -15,7 +15,8 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 )
 
-func CopyFileToContainerInPod(ctx context.Context, pod *corev1.Pod, containerName string, srcPath string, destPath string, attempts int) error {
+// CopyFileToContainerInPod copies a local file into a container.
+func (c *Client) CopyFileToContainerInPod(ctx context.Context, pod *corev1.Pod, containerName, srcPath, destPath string, attempts int) error {
 	buffer := &bytes.Buffer{}
 	srcPath = filepath.Clean(srcPath)
 	destPath = filepath.Clean(destPath)
@@ -25,7 +26,7 @@ func CopyFileToContainerInPod(ctx context.Context, pod *corev1.Pod, containerNam
 	}
 
 	dir := filepath.Dir(destPath)
-	req := getClientSet().CoreV1().RESTClient().Post().
+	req := c.clientSet.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(pod.Name).
 		Namespace(pod.Namespace).
@@ -43,11 +44,10 @@ tar zxf - -C /`, dir)},
 	}, scheme.ParameterCodec)
 
 	return Retry(attempts, time.Second, func() error {
-		exec, err := remotecommand.NewSPDYExecutor(GetClientConfig(), "POST", req.URL())
+		exec, err := remotecommand.NewSPDYExecutor(c.config, "POST", req.URL())
 		if err != nil {
 			return err
 		}
-
 		b := &strings.Builder{}
 		err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
 			Stdin:  bytes.NewReader(buffer.Bytes()),
@@ -62,11 +62,12 @@ tar zxf - -C /`, dir)},
 	})
 }
 
-func CopyFileFromContainerInPod(ctx context.Context, pod *corev1.Pod, containerName string, srcPath string, destPath string, attempts int) error {
+// CopyFileFromContainerInPod copies a file from a container to a local path.
+func (c *Client) CopyFileFromContainerInPod(ctx context.Context, pod *corev1.Pod, containerName, srcPath, destPath string, attempts int) error {
 	srcPath = filepath.Clean(srcPath)
 	destPath = filepath.Clean(destPath)
 
-	req := getClientSet().CoreV1().RESTClient().Post().
+	req := c.clientSet.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(pod.Name).
 		Namespace(pod.Namespace).
@@ -82,11 +83,10 @@ func CopyFileFromContainerInPod(ctx context.Context, pod *corev1.Pod, containerN
 	}, scheme.ParameterCodec)
 
 	return Retry(attempts, time.Second, func() error {
-		exec, err := remotecommand.NewSPDYExecutor(GetClientConfig(), "POST", req.URL())
+		exec, err := remotecommand.NewSPDYExecutor(c.config, "POST", req.URL())
 		if err != nil {
 			return err
 		}
-
 		buffer := &bytes.Buffer{}
 		stderr := &strings.Builder{}
 		err = exec.StreamWithContext(ctx, remotecommand.StreamOptions{
@@ -97,7 +97,6 @@ func CopyFileFromContainerInPod(ctx context.Context, pod *corev1.Pod, containerN
 		if err != nil {
 			return multierr.Append(err, fmt.Errorf("%s", stderr.String()))
 		}
-
 		return helmtar.Decompress(buffer, destPath)
 	})
 }

@@ -14,82 +14,113 @@ import (
 	"go.uber.org/multierr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/discovery/cached/memory"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/remotecommand"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 const debug = false
 
-var clientSet kubernetes.Interface
-var config *rest.Config
-var configProvider func() *rest.Config
-var m sync.Mutex
-var initOnce sync.Once
-var overridden bool
+// defaultClient is lazily initialized on the first call to DefaultClient().
+var defaultClient = sync.OnceValues(func() (*Client, error) {
+	return NewClient()
+})
 
-// SetClientSet allows injecting a custom kubernetes.Interface (e.g. fake.NewClientset())
-// for testing. When set, lazy initialization is skipped entirely.
-func SetClientSet(client kubernetes.Interface) {
-	m.Lock()
-	defer m.Unlock()
-	clientSet = client
-	overridden = true
+// DefaultClient returns a lazily-initialized Client using the in-cluster or
+// kubeconfig-based rest.Config. The same instance is returned on every call.
+// For explicit control over configuration, use NewClient or NewClientFromConfig.
+func DefaultClient() (*Client, error) {
+	return defaultClient()
 }
 
-// getClientSet returns the kubernetes client, initializing it lazily on first call.
-// If SetClientSet was called, the injected client is returned without initialization.
-func getClientSet() kubernetes.Interface {
-	m.Lock()
-	if overridden {
-		cs := clientSet
-		m.Unlock()
-		return cs
-	}
-	m.Unlock()
-	initOnce.Do(func() {
-		clientSet = kubernetes.NewForConfigOrDie(GetClientConfig())
-	})
-	return clientSet
+// Client wraps a typed Kubernetes clientset, a dynamic client, cached
+// discovery, and a REST mapper behind a single handle.
+type Client struct {
+	clientSet       kubernetes.Interface
+	dynamic         dynamic.Interface
+	cachedDiscovery discovery.CachedDiscoveryInterface
+	restMapper      *restmapper.DeferredDiscoveryRESTMapper
+	config          *rest.Config
+	mu              sync.Mutex
 }
 
-// GetClientSet returns the lazily-initialized (or overridden) kubernetes.Interface client,
-// allowing downstream projects to reuse the same client instance.
-func GetClientSet() kubernetes.Interface {
-	return getClientSet()
-}
-
-// SetConfigProvider allows downstream projects to provide their own rest.Config
-// creation logic. The provider is called lazily when GetClientConfig is first invoked.
-// If no provider is set, the default ctrl.GetConfig() behavior is used.
-func SetConfigProvider(provider func() *rest.Config) {
-	configProvider = provider
-}
-
-func GetClientConfig() *rest.Config {
-	if config != nil {
-		return config
-	}
-	if configProvider != nil {
-		config = configProvider()
-		return config
-	}
-	var err error
-	config, err = ctrl.GetConfig()
+// NewClient creates a Client using the in-cluster or kubeconfig-based
+// rest.Config obtained from controller-runtime.
+func NewClient() (*Client, error) {
+	cfg, err := ctrl.GetConfig()
 	if err != nil {
-		panic(fmt.Sprintf("couldn't create kube config: %v", err.Error()))
+		return nil, fmt.Errorf("couldn't create kube config: %w", err)
 	}
-	return config
+	return NewClientFromConfig(cfg)
 }
 
+// NewClientFromConfig creates a fully-wired Client from an existing rest.Config.
+func NewClientFromConfig(cfg *rest.Config) (*Client, error) {
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't create kubernetes clientset: %w", err)
+	}
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("couldn't create dynamic client: %w", err)
+	}
+	return newClientWithDeps(cs, dyn, cfg), nil
+}
+
+// NewClientFromClientSet creates a Client from pre-built typed and dynamic
+// clients. Useful for testing with fake.NewClientset() / fakedynamic.
+// A non-nil config is required for operations that use SPDY (exec, cp).
+func NewClientFromClientSet(cs kubernetes.Interface, dyn dynamic.Interface, cfg *rest.Config) *Client {
+	return newClientWithDeps(cs, dyn, cfg)
+}
+
+func newClientWithDeps(cs kubernetes.Interface, dyn dynamic.Interface, cfg *rest.Config) *Client {
+	cachedDisc := memory.NewMemCacheClient(cs.Discovery())
+	mapper := restmapper.NewDeferredDiscoveryRESTMapper(cachedDisc)
+	return &Client{
+		clientSet:       cs,
+		dynamic:         dyn,
+		cachedDiscovery: cachedDisc,
+		restMapper:      mapper,
+		config:          cfg,
+	}
+}
+
+// ClientSet returns the typed kubernetes.Interface.
+func (c *Client) ClientSet() kubernetes.Interface {
+	return c.clientSet
+}
+
+// Dynamic returns the dynamic Kubernetes client.
+func (c *Client) Dynamic() dynamic.Interface {
+	return c.dynamic
+}
+
+// Discovery returns the cached discovery client.
+func (c *Client) Discovery() discovery.CachedDiscoveryInterface {
+	return c.cachedDiscovery
+}
+
+// RESTMapper returns the deferred discovery REST mapper.
+func (c *Client) RESTMapper() *restmapper.DeferredDiscoveryRESTMapper {
+	return c.restMapper
+}
+
+// Config returns the underlying rest.Config.
+func (c *Client) Config() *rest.Config {
+	return c.config
+}
+
+// RunCommandInPodOptions holds parameters for running a command inside a pod container.
 type RunCommandInPodOptions struct {
-	// Background context will be used if not set
-	Context context.Context
-	// Default value is 10 seconds if not set
-	Timeout time.Duration
-	// Command to be run
+	Context       context.Context
+	Timeout       time.Duration // defaults to 10s if zero
 	Command       string
 	PodName       string
 	PodNamespace  string
@@ -99,8 +130,9 @@ type RunCommandInPodOptions struct {
 	Stdout        io.Writer
 }
 
-func GetPodContainerLogs(ctx context.Context, namespace string, podName string, containerName string, sinceTime *metav1.Time) (string, error) {
-	podLogsRequest := getClientSet().CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
+// GetPodContainerLogs retrieves logs from a specific container in a pod.
+func (c *Client) GetPodContainerLogs(ctx context.Context, namespace, podName, containerName string, sinceTime *metav1.Time) (string, error) {
+	podLogsRequest := c.clientSet.CoreV1().Pods(namespace).GetLogs(podName, &corev1.PodLogOptions{
 		Container: containerName,
 		SinceTime: sinceTime,
 	})
@@ -109,18 +141,17 @@ func GetPodContainerLogs(ctx context.Context, namespace string, podName string, 
 		return "", err
 	}
 	defer func() { _ = logStream.Close() }()
-	builder := strings.Builder{}
+
+	var builder strings.Builder
 	reader := bufio.NewScanner(logStream)
-	var line string
 	t := time.Now()
-	for time.Since(t) <= time.Minute*1 {
+	for time.Since(t) <= time.Minute {
 		select {
 		case <-ctx.Done():
 			return builder.String(), nil
 		default:
 			for reader.Scan() {
-				line = reader.Text()
-				builder.WriteString(line)
+				builder.WriteString(reader.Text())
 				builder.WriteByte('\n')
 			}
 			return builder.String(), nil
@@ -129,30 +160,33 @@ func GetPodContainerLogs(ctx context.Context, namespace string, podName string, 
 	return "", fmt.Errorf("timed out in GetPodContainerLogs")
 }
 
-// RunCommandInPodWithOptions returns stdout, stderr, err after running a command
-func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string, error) {
-	if options.Timeout < time.Millisecond*1 {
+// RunCommandInPodWithOptions executes a command in a pod container and returns stdout, stderr, and any error.
+func (c *Client) RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string, error) {
+	if options.Timeout < time.Millisecond {
 		options.Timeout = time.Second * 10
 	}
 	myCtx, cancel := context.WithTimeout(options.Context, options.Timeout)
+
 	type execResult struct {
 		stdout string
 		stderr string
 		err    error
 	}
 	resultChan := make(chan execResult, 1)
+
 	go func() {
 		objName := fmt.Sprintf("%v-%v-%v", options.PodNamespace, options.PodName, options.ContainerName)
-		m.Lock()
+		c.mu.Lock()
 		mutexForObject, found := operatorcache.Get[*sync.Mutex](objName)
 		if !found {
 			mutexForObject = &sync.Mutex{}
 			operatorcache.AddOrReplace(objName, mutexForObject, time.Second*10)
 		}
-		m.Unlock()
+		c.mu.Unlock()
 		mutexForObject.Lock()
 		defer mutexForObject.Unlock()
-		req := getClientSet().CoreV1().RESTClient().Post().
+
+		req := c.clientSet.CoreV1().RESTClient().Post().
 			Resource("pods").
 			Name(options.PodName).
 			Namespace(options.PodNamespace).
@@ -168,11 +202,12 @@ func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string,
 			fmt.Println("Request URL:", req.URL().String())
 		}
 
-		exec, err := remotecommand.NewSPDYExecutor(config, "POST", req.URL())
+		exec, err := remotecommand.NewSPDYExecutor(c.config, "POST", req.URL())
 		if err != nil {
 			resultChan <- execResult{err: fmt.Errorf("error while creating Executor: %v", err)}
 			return
 		}
+
 		stdoutBuffer := &bytes.Buffer{}
 		stderrBuffer := &bytes.Buffer{}
 		var stdoutMultiWriter, stderrMultiWriter io.Writer
@@ -195,8 +230,6 @@ func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string,
 		})
 		so := stdoutBuffer.String()
 		se := stderrBuffer.String()
-		stdoutBuffer = nil
-		stderrBuffer = nil
 		if err != nil {
 			resultChan <- execResult{stdout: so, stderr: se, err: fmt.Errorf("'%v' command failed: %v", options.Command, err.Error())}
 			return
@@ -218,8 +251,9 @@ func RunCommandInPodWithOptions(options RunCommandInPodOptions) (string, string,
 	return stdout, stderr, mErr
 }
 
-func RunCommandInPodWithContextAndTimeout(ctx context.Context, timeout time.Duration, command, containerName, podName, namespace string, stdin io.Reader) (string, string, error) {
-	return RunCommandInPodWithOptions(RunCommandInPodOptions{
+// RunCommandInPodWithContextAndTimeout is a convenience wrapper.
+func (c *Client) RunCommandInPodWithContextAndTimeout(ctx context.Context, timeout time.Duration, command, containerName, podName, namespace string, stdin io.Reader) (string, string, error) {
+	return c.RunCommandInPodWithOptions(RunCommandInPodOptions{
 		Context:       ctx,
 		Timeout:       timeout,
 		Command:       command,
@@ -227,26 +261,15 @@ func RunCommandInPodWithContextAndTimeout(ctx context.Context, timeout time.Dura
 		PodNamespace:  namespace,
 		ContainerName: containerName,
 		Stdin:         stdin,
-		Stderr:        nil,
-		Stdout:        nil,
 	})
 }
 
-// RunCommandInPodWithTimeout runs a command in a container with specified timeout.
-// Timeout can't be less 1ms
-func RunCommandInPodWithTimeout(timeout time.Duration, command, containerName, podName, namespace string, stdin io.Reader) (string, string, error) {
-	ctx := context.Background()
-	return RunCommandInPodWithContextAndTimeout(ctx, timeout, command, containerName, podName, namespace, stdin)
+// RunCommandInPodWithTimeout runs a command in a container with the specified timeout.
+func (c *Client) RunCommandInPodWithTimeout(timeout time.Duration, command, containerName, podName, namespace string, stdin io.Reader) (string, string, error) {
+	return c.RunCommandInPodWithContextAndTimeout(context.Background(), timeout, command, containerName, podName, namespace, stdin)
 }
 
-// RunCommandInPod runs a command in a container with default 10 sec timeout
-func RunCommandInPod(command, containerName, podName, namespace string, stdin io.Reader) (string, string, error) {
-	return RunCommandInPodWithTimeout(time.Second*10, command, containerName, podName, namespace, stdin)
-}
-
-// InitializeOperatorCoreClientSet eagerly initializes the client set.
-// This is kept for backward compatibility but is no longer required —
-// the client is initialized lazily on first use.
-func InitializeOperatorCoreClientSet() {
-	getClientSet()
+// RunCommandInPod runs a command in a container with a default 10s timeout.
+func (c *Client) RunCommandInPod(command, containerName, podName, namespace string, stdin io.Reader) (string, string, error) {
+	return c.RunCommandInPodWithTimeout(time.Second*10, command, containerName, podName, namespace, stdin)
 }
