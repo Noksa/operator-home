@@ -25,6 +25,7 @@ const debug = false
 
 var clientSet kubernetes.Interface
 var config *rest.Config
+var configProvider func() *rest.Config
 var m sync.Mutex
 var initOnce sync.Once
 var overridden bool
@@ -60,8 +61,19 @@ func GetClientSet() kubernetes.Interface {
 	return getClientSet()
 }
 
+// SetConfigProvider allows downstream projects to provide their own rest.Config
+// creation logic. The provider is called lazily when GetClientConfig is first invoked.
+// If no provider is set, the default ctrl.GetConfig() behavior is used.
+func SetConfigProvider(provider func() *rest.Config) {
+	configProvider = provider
+}
+
 func GetClientConfig() *rest.Config {
 	if config != nil {
+		return config
+	}
+	if configProvider != nil {
+		config = configProvider()
 		return config
 	}
 	var err error
