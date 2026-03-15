@@ -160,6 +160,67 @@ type RunCommandInPodOptions struct {
 	Stdin         io.Reader
 	Stderr        io.Writer
 	Stdout        io.Writer
+	TTY           bool
+	// RawCommand when true passes Command as whitespace-split argv directly,
+	// bypassing the default /bin/sh -c wrapper. Useful for binaries like tar,
+	// cat, or any executable where shell interpretation is unwanted.
+	RawCommand bool
+}
+
+// RunCommandOption is a functional option for ExecInPod.
+type RunCommandOption func(*RunCommandInPodOptions)
+
+// WithContext sets the context for the command execution.
+func WithContext(ctx context.Context) RunCommandOption {
+	return func(o *RunCommandInPodOptions) { o.Context = ctx }
+}
+
+// WithTimeout sets the execution timeout.
+func WithTimeout(d time.Duration) RunCommandOption {
+	return func(o *RunCommandInPodOptions) { o.Timeout = d }
+}
+
+// WithStdin sets the stdin reader.
+func WithStdin(r io.Reader) RunCommandOption {
+	return func(o *RunCommandInPodOptions) { o.Stdin = r }
+}
+
+// WithStdout sets the stdout writer.
+func WithStdout(w io.Writer) RunCommandOption {
+	return func(o *RunCommandInPodOptions) { o.Stdout = w }
+}
+
+// WithStderr sets the stderr writer.
+func WithStderr(w io.Writer) RunCommandOption {
+	return func(o *RunCommandInPodOptions) { o.Stderr = w }
+}
+
+// WithTTY enables or disables TTY mode.
+func WithTTY(tty bool) RunCommandOption {
+	return func(o *RunCommandInPodOptions) { o.TTY = tty }
+}
+
+// WithRawCommand when set to true passes the command string as whitespace-split
+// argv directly, bypassing the /bin/sh -c wrapper.
+func WithRawCommand(raw bool) RunCommandOption {
+	return func(o *RunCommandInPodOptions) { o.RawCommand = raw }
+}
+
+// ExecInPod runs a command in a pod container using functional options.
+// Defaults: 10s timeout, no TTY, no stdin, context.Background().
+func (c *Client) ExecInPod(command, containerName, podName, namespace string, opts ...RunCommandOption) (string, string, error) {
+	o := RunCommandInPodOptions{
+		Context:       context.Background(),
+		Timeout:       10 * time.Second,
+		Command:       command,
+		PodName:       podName,
+		PodNamespace:  namespace,
+		ContainerName: containerName,
+	}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	return c.RunCommandInPodWithOptions(o)
 }
 
 // GetPodContainerLogs retrieves logs from a specific container in a pod.
@@ -218,16 +279,24 @@ func (c *Client) RunCommandInPodWithOptions(options RunCommandInPodOptions) (str
 		mutexForObject.Lock()
 		defer mutexForObject.Unlock()
 
+		var cmdSlice []string
+		if options.RawCommand {
+			cmdSlice = strings.Fields(options.Command)
+		} else {
+			cmdSlice = []string{"/bin/sh", "-c", options.Command}
+		}
+
 		req := c.clientSet.CoreV1().RESTClient().Post().
 			Resource("pods").
 			Name(options.PodName).
 			Namespace(options.PodNamespace).
 			SubResource("exec").VersionedParams(&corev1.PodExecOptions{
-			Command:   []string{"/bin/sh", "-c", options.Command},
+			Command:   cmdSlice,
 			Container: options.ContainerName,
 			Stdin:     options.Stdin != nil,
 			Stdout:    true,
 			Stderr:    true,
+			TTY:       options.TTY,
 		}, scheme.ParameterCodec)
 
 		if debug {
@@ -258,7 +327,7 @@ func (c *Client) RunCommandInPodWithOptions(options RunCommandInPodOptions) (str
 			Stdin:  options.Stdin,
 			Stdout: stdoutMultiWriter,
 			Stderr: stderrMultiWriter,
-			Tty:    false,
+			Tty:    options.TTY,
 		})
 		so := stdoutBuffer.String()
 		se := stderrBuffer.String()

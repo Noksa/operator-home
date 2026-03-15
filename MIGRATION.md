@@ -162,6 +162,78 @@ cfg.CustomLoggerSetup = func() logr.Logger { return myLogger }
 b := operatorbootstrap.NewBootstrapper(ctx, cfg, optsFunc, mgrFunc)
 ```
 
+### New: TTY support and functional options API for pod exec
+
+`RunCommandInPodOptions` has two new fields:
+
+| Field        | Type   | Default | Description                                                                 |
+|--------------|--------|---------|-----------------------------------------------------------------------------|
+| `TTY`        | `bool` | `false` | When true, allocates a TTY for the exec session (interactive shells, etc.)  |
+| `RawCommand` | `bool` | `false` | When true, splits the command string on whitespace and passes it as argv directly, bypassing the `/bin/sh -c` wrapper. Useful for `tar`, `cat`, and other binaries where shell interpretation is unwanted. |
+
+Zero values preserve existing behavior — no changes needed for current callers.
+
+**Functional options API (`ExecInPod`):**
+
+A new `ExecInPod` method provides a cleaner alternative to the struct-based `RunCommandInPodWithOptions`.
+All existing methods (`RunCommandInPod`, `RunCommandInPodWithTimeout`, `RunCommandInPodWithContextAndTimeout`,
+`RunCommandInPodWithOptions`) are unchanged.
+
+```go
+type RunCommandOption func(*RunCommandInPodOptions)
+
+func WithContext(ctx context.Context) RunCommandOption
+func WithTimeout(d time.Duration) RunCommandOption
+func WithStdin(r io.Reader) RunCommandOption
+func WithStdout(w io.Writer) RunCommandOption
+func WithStderr(w io.Writer) RunCommandOption
+func WithTTY(tty bool) RunCommandOption
+func WithRawCommand(raw bool) RunCommandOption
+
+func (c *Client) ExecInPod(command, containerName, podName, namespace string, opts ...RunCommandOption) (string, string, error)
+```
+
+Defaults when no options are provided: `context.Background()`, 10 s timeout, no TTY, no raw command, nil stdin/stdout/stderr.
+
+**Examples:**
+
+```go
+// Functional options — simple command
+client.ExecInPod("ls -la /tmp", "app", pod.Name, pod.Namespace,
+    operatorkclient.WithContext(ctx),
+    operatorkclient.WithTimeout(30*time.Second),
+)
+
+// Functional options — raw binary (no shell wrapper)
+client.ExecInPod("tar czf - -C /data .", "app", pod.Name, pod.Namespace,
+    operatorkclient.WithContext(ctx),
+    operatorkclient.WithTimeout(5*time.Minute),
+    operatorkclient.WithRawCommand(true),
+    operatorkclient.WithStdout(&buf),
+)
+
+// Functional options — interactive shell with TTY
+client.ExecInPod("/bin/bash", "app", pod.Name, pod.Namespace,
+    operatorkclient.WithContext(ctx),
+    operatorkclient.WithTTY(true),
+    operatorkclient.WithStdin(os.Stdin),
+    operatorkclient.WithStdout(os.Stdout),
+    operatorkclient.WithStderr(os.Stderr),
+)
+
+// Struct-based — still works exactly as before, with optional new fields
+client.RunCommandInPodWithOptions(operatorkclient.RunCommandInPodOptions{
+    Context:       ctx,
+    Timeout:       time.Minute,
+    Command:       "tar czf - -C /data .",
+    PodName:       pod.Name,
+    PodNamespace:  pod.Namespace,
+    ContainerName: "app",
+    RawCommand:    true,
+    Stdout:        &buf,
+})
+```
+
 ## Quick migration checklist
 
 1. Replace all `operatorkclient.<Function>(...)` calls with `client.<Method>(...)` on a `*Client` instance
