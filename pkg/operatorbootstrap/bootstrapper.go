@@ -30,11 +30,11 @@ func (b *Bootstrapper) Cancelled() bool {
 }
 
 // NewBootstrapper creates a Bootstrapper, instantiating configuration and the
-// controller-runtime manager.
-func NewBootstrapper(ctx context.Context, operatorCfg operatorconfig.OperatorConfig, newOpts func() ctrl.Options, mgrFunc operatorbootstrapinternal.ManagerFunc) *Bootstrapper {
+// controller-runtime manager. Call SetupSignalHandler to establish the lifecycle context.
+func NewBootstrapper(operatorCfg operatorconfig.OperatorConfig, newOpts func() ctrl.Options, mgrFunc operatorbootstrapinternal.ManagerFunc) *Bootstrapper {
 	operatorconfiginternal.InstantiateConfiguration(operatorCfg)
 	mgr := operatorbootstrapinternal.NewManager(newOpts(), mgrFunc)
-	return &Bootstrapper{mgr: mgr, ctx: ctx}
+	return &Bootstrapper{mgr: mgr, ctx: context.Background()}
 }
 
 // GetMgr returns the underlying controller-runtime manager.
@@ -67,6 +67,7 @@ func (b *Bootstrapper) Run() {
 // The optional callback runs before cancellation.
 func (b *Bootstrapper) SetupSignalHandler(additionalActionBeforeCancel func()) context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
+	b.ctx = ctx
 	c := make(chan os.Signal, 2)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
