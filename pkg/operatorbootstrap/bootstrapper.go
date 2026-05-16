@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/Noksa/operator-home/internal/operatorbootstrapinternal"
 	"github.com/Noksa/operator-home/internal/operatorconfiginternal"
@@ -21,6 +22,7 @@ import (
 type Bootstrapper struct {
 	mgr       manager.Manager
 	ctx       context.Context
+	cancel    context.CancelFunc
 	cancelled atomic.Bool
 }
 
@@ -30,11 +32,21 @@ func (b *Bootstrapper) Cancelled() bool {
 }
 
 // NewBootstrapper creates a Bootstrapper, instantiating configuration and the
-// controller-runtime manager. Call SetupSignalHandler to establish the lifecycle context.
-func NewBootstrapper(operatorCfg operatorconfig.OperatorConfig, newOpts func() ctrl.Options, mgrFunc operatorbootstrapinternal.ManagerFunc) *Bootstrapper {
+// controller-runtime manager.
+//
+// The parent ctx controls the manager's lifetime — it is wrapped internally so
+// both OS signals (via SetupSignalHandler) and external cancellation stop the
+// manager cleanly. Pass context.Background() when relying solely on signals.
+//
+// BaseContext in opts is set automatically to the bootstrapper's internal
+// context so reconcile loops and request handlers inherit the shutdown signal.
+// Any value already set in opts.BaseContext is overwritten.
+func NewBootstrapper(ctx context.Context, operatorCfg operatorconfig.OperatorConfig, opts ctrl.Options, mgrFunc operatorbootstrapinternal.ManagerFunc) *Bootstrapper {
 	operatorconfiginternal.InstantiateConfiguration(operatorCfg)
-	mgr := operatorbootstrapinternal.NewManager(newOpts(), mgrFunc)
-	return &Bootstrapper{mgr: mgr, ctx: context.Background()}
+	ctx, cancel := context.WithCancel(ctx)
+	opts.BaseContext = func() context.Context { return ctx }
+	mgr := operatorbootstrapinternal.NewManager(opts, mgrFunc)
+	return &Bootstrapper{mgr: mgr, ctx: ctx, cancel: cancel}
 }
 
 // GetMgr returns the underlying controller-runtime manager.
@@ -42,7 +54,8 @@ func (b *Bootstrapper) GetMgr() manager.Manager {
 	return b.mgr
 }
 
-// Context returns the context used by this bootstrapper.
+// Context returns the context that governs the manager and all goroutines that
+// should stop when the operator shuts down.
 func (b *Bootstrapper) Context() context.Context {
 	return b.ctx
 }
@@ -55,19 +68,40 @@ func (b *Bootstrapper) WithControllers(controllers ...KubernetesOperator) *Boots
 	return b
 }
 
-// Run starts health/readiness probes and the manager. Blocks until the context is done.
+// Run starts health/readiness probes and the manager. Blocks until the
+// bootstrapper's context is done.
 func (b *Bootstrapper) Run() {
 	lo.Must0(b.GetMgr().AddHealthzCheck("healthz", healthz.Ping), "unable to setup healthz")
 	lo.Must0(b.GetMgr().AddReadyzCheck("readyz", healthz.Ping), "unable to setup readyz")
 	lo.Must0(b.mgr.Start(b.ctx))
 }
 
-// SetupSignalHandler installs OS signal handling (SIGINT, SIGTERM) and returns
-// a context that is cancelled on the first signal. A second signal exits immediately.
-// The optional callback runs before cancellation.
-func (b *Bootstrapper) SetupSignalHandler(additionalActionBeforeCancel func()) context.Context {
+// SetupSignalHandler installs OS signal handling (SIGINT, SIGTERM). On the
+// first signal the bootstrapper's context is cancelled after gracefulShutdownDelay,
+// stopping the manager and any goroutines using Context(). A second signal exits
+// immediately. Pass 0 for no delay.
+//
+// Returns Context() for convenience — use the returned value wherever a
+// signal-aware context is needed without calling Context() separately.
+func (b *Bootstrapper) SetupSignalHandler(gracefulShutdownDelay time.Duration) context.Context {
+	setupSignalHandler(gracefulShutdownDelay, &b.cancelled, b.cancel)
+	return b.ctx
+}
+
+// CustomSignalsHandler is a standalone signal handler for code that needs a
+// cancellable context before constructing a Bootstrapper. On the first
+// SIGINT/SIGTERM the returned context is cancelled after gracefulShutdownDelay.
+// A second signal exits immediately. Pass 0 for no delay.
+func CustomSignalsHandler(gracefulShutdownDelay time.Duration) context.Context {
 	ctx, cancel := context.WithCancel(context.Background())
-	b.ctx = ctx
+	var dummy atomic.Bool
+	setupSignalHandler(gracefulShutdownDelay, &dummy, cancel)
+	return ctx
+}
+
+// setupSignalHandler is the shared implementation for both SetupSignalHandler
+// and CustomSignalsHandler.
+func setupSignalHandler(gracefulShutdownDelay time.Duration, cancelled *atomic.Bool, cancel context.CancelFunc) {
 	c := make(chan os.Signal, 2)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -76,15 +110,14 @@ func (b *Bootstrapper) SetupSignalHandler(additionalActionBeforeCancel func()) c
 		if s != nil {
 			logger.WithValues("Signal", s.String()).Info("Received the signal")
 		}
-		b.cancelled.Store(true)
-		if additionalActionBeforeCancel != nil {
-			logger.Info("Running additional actions before exit")
-			additionalActionBeforeCancel()
+		cancelled.Store(true)
+		if gracefulShutdownDelay > 0 {
+			logger.Info("Waiting before shutdown", "delay", gracefulShutdownDelay)
+			time.Sleep(gracefulShutdownDelay)
 		}
 		logger.Info("Cancelling context")
 		cancel()
 		<-c
 		os.Exit(999) // second signal — exit immediately
 	}()
-	return ctx
 }

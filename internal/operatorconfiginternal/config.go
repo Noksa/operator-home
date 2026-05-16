@@ -20,7 +20,7 @@ import (
 // reads an additional YAML config file into cfg.
 func InstantiateConfiguration(cfg operatorconfig.OperatorConfig) {
 	kind := reflect.ValueOf(cfg).Kind()
-	if kind != reflect.Ptr {
+	if kind != reflect.Pointer {
 		panic(fmt.Sprintf("InstantiateConfiguration requires a pointer. Got %v", kind))
 	}
 	flagParser := goflags.NewParser(cfg, goflags.IgnoreUnknown|goflags.PassDoubleDash|goflags.HelpFlag)
