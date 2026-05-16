@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 // Bootstrapper wires up configuration, manager, and controllers for an operator.
@@ -31,26 +32,40 @@ func (b *Bootstrapper) Cancelled() bool {
 	return b.cancelled.Load()
 }
 
-// InitConfig parses CLI flags and loads the operator configuration from disk.
-// It must be called before NewBootstrapper so that all config values
-// (addresses, namespaces, feature flags) are populated when building ctrl.Options.
-func InitConfig(cfg operatorconfig.OperatorConfig) {
-	operatorconfiginternal.InstantiateConfiguration(cfg)
-}
+// NewBootstrapper creates a Bootstrapper. It initializes the operator config
+// first (parses CLI flags, loads the YAML config file), then calls optsModifier
+// with a ctrl.Options pre-populated from DefaultConfig:
+//
+//   - Metrics.BindAddress  ← MetricsAddr
+//   - HealthProbeBindAddress ← ProbeAddr
+//   - LeaderElection       ← EnableLeaderElection
+//   - BaseContext           ← bootstrapper's internal context (always set)
+//
+// optsModifier receives these defaults and returns the final options. Only set
+// operator-specific fields inside it: Scheme, LeaderElectionID, WebhookServer, etc.
+// Config values that live outside DefaultConfig (e.g. cfg.Cfg.Namespaces.System)
+// are safe to access inside the modifier because config is already initialised.
+//
+// Pass nil for optsModifier to use the defaults unchanged.
+//
+// The parent ctx controls the manager lifetime and is wrapped internally, so
+// both OS signals (SetupSignalHandler) and external cancellation stop everything.
+func NewBootstrapper(ctx context.Context, operatorCfg operatorconfig.OperatorConfig, optsModifier func(ctrl.Options) ctrl.Options, mgrFunc operatorbootstrapinternal.ManagerFunc) *Bootstrapper {
+	operatorconfiginternal.InstantiateConfiguration(operatorCfg)
 
-// NewBootstrapper creates a Bootstrapper and the controller-runtime manager.
-// Call InitConfig first so that config-derived values in opts are populated.
-//
-// The parent ctx controls the manager's lifetime — it is wrapped internally so
-// both OS signals (via SetupSignalHandler) and external cancellation stop the
-// manager cleanly. Pass context.Background() when relying solely on signals.
-//
-// BaseContext in opts is set automatically to the bootstrapper's internal
-// context so reconcile loops and request handlers inherit the shutdown signal.
-// Any value already set in opts.BaseContext is overwritten.
-func NewBootstrapper(ctx context.Context, opts ctrl.Options, mgrFunc operatorbootstrapinternal.ManagerFunc) *Bootstrapper {
+	dc := operatorCfg.GetDefaultConfig()
+	opts := ctrl.Options{
+		Metrics:                metricsserver.Options{BindAddress: dc.MetricsAddr},
+		HealthProbeBindAddress: dc.ProbeAddr,
+		LeaderElection:         dc.EnableLeaderElection,
+	}
+	if optsModifier != nil {
+		opts = optsModifier(opts)
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	opts.BaseContext = func() context.Context { return ctx }
+
 	mgr := operatorbootstrapinternal.NewManager(opts, mgrFunc)
 	return &Bootstrapper{mgr: mgr, ctx: ctx, cancel: cancel}
 }
@@ -105,8 +120,6 @@ func CustomSignalsHandler(gracefulShutdownDelay time.Duration) context.Context {
 	return ctx
 }
 
-// setupSignalHandler is the shared implementation for SetupSignalHandler and
-// CustomSignalsHandler.
 func setupSignalHandler(gracefulShutdownDelay time.Duration, cancelled *atomic.Bool, cancel context.CancelFunc) {
 	c := make(chan os.Signal, 2)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
