@@ -16,6 +16,13 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
+// Set at link time via -ldflags; take precedence over the GIT_COMMIT_SHA /
+// BUILD_DATE env vars, which remain as a fallback for Docker-only injection.
+var (
+	ldBuildCommitSHA string
+	ldBuildDate      string
+)
+
 // InstantiateConfiguration parses flags, sets up logging, and optionally
 // reads an additional YAML config file into cfg.
 func InstantiateConfiguration(cfg operatorconfig.OperatorConfig) {
@@ -35,8 +42,8 @@ func InstantiateConfiguration(cfg operatorconfig.OperatorConfig) {
 		mainLogger = defaultLogger(dc)
 	}
 
-	commitSha := envOrDefault("GIT_COMMIT_SHA", "local-build")
-	buildDate := envOrDefault("BUILD_DATE", "unknown")
+	commitSha := firstNonEmpty(ldBuildCommitSHA, envOrDefault("GIT_COMMIT_SHA", "local-build"))
+	buildDate := firstNonEmpty(ldBuildDate, envOrDefault("BUILD_DATE", "unknown"))
 	mainLogger.WithValues("Commit sha", commitSha, "Build date", buildDate, "Log level", dc.LoggingLevel, "Log type", dc.LoggingType).Info("Operator info")
 	mainLogger.V(1).Info("Debug logging activated")
 	ctrl.SetLogger(mainLogger)
@@ -86,4 +93,13 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
