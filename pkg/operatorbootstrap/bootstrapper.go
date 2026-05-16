@@ -31,8 +31,15 @@ func (b *Bootstrapper) Cancelled() bool {
 	return b.cancelled.Load()
 }
 
-// NewBootstrapper creates a Bootstrapper, instantiating configuration and the
-// controller-runtime manager.
+// InitConfig parses CLI flags and loads the operator configuration from disk.
+// It must be called before NewBootstrapper so that all config values
+// (addresses, namespaces, feature flags) are populated when building ctrl.Options.
+func InitConfig(cfg operatorconfig.OperatorConfig) {
+	operatorconfiginternal.InstantiateConfiguration(cfg)
+}
+
+// NewBootstrapper creates a Bootstrapper and the controller-runtime manager.
+// Call InitConfig first so that config-derived values in opts are populated.
 //
 // The parent ctx controls the manager's lifetime — it is wrapped internally so
 // both OS signals (via SetupSignalHandler) and external cancellation stop the
@@ -41,8 +48,7 @@ func (b *Bootstrapper) Cancelled() bool {
 // BaseContext in opts is set automatically to the bootstrapper's internal
 // context so reconcile loops and request handlers inherit the shutdown signal.
 // Any value already set in opts.BaseContext is overwritten.
-func NewBootstrapper(ctx context.Context, operatorCfg operatorconfig.OperatorConfig, opts ctrl.Options, mgrFunc operatorbootstrapinternal.ManagerFunc) *Bootstrapper {
-	operatorconfiginternal.InstantiateConfiguration(operatorCfg)
+func NewBootstrapper(ctx context.Context, opts ctrl.Options, mgrFunc operatorbootstrapinternal.ManagerFunc) *Bootstrapper {
 	ctx, cancel := context.WithCancel(ctx)
 	opts.BaseContext = func() context.Context { return ctx }
 	mgr := operatorbootstrapinternal.NewManager(opts, mgrFunc)
@@ -99,8 +105,8 @@ func CustomSignalsHandler(gracefulShutdownDelay time.Duration) context.Context {
 	return ctx
 }
 
-// setupSignalHandler is the shared implementation for both SetupSignalHandler
-// and CustomSignalsHandler.
+// setupSignalHandler is the shared implementation for SetupSignalHandler and
+// CustomSignalsHandler.
 func setupSignalHandler(gracefulShutdownDelay time.Duration, cancelled *atomic.Bool, cancel context.CancelFunc) {
 	c := make(chan os.Signal, 2)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
