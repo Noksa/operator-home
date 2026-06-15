@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/Noksa/operator-home/internal/operatorbootstrapinternal"
+	"github.com/Noksa/operator-home/internal/operatorconfiginternal"
+	"github.com/Noksa/operator-home/pkg/operatorconfig"
 	"github.com/samber/lo"
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,6 +26,13 @@ func AddPodIndexersToManager(mgr manager.Manager) {
 // MustSetupController panics if err is non-nil.
 func MustSetupController(err error) {
 	lo.Must0(err, "couldn't create controller")
+}
+
+// MustInitConfig initializes the operator config (CLI flags, YAML file, defaults)
+// without creating a manager. Use this when you need config values before constructing
+// a provider or other components that depend on config.
+func MustInitConfig(operatorCfg operatorconfig.OperatorConfig) {
+	operatorconfiginternal.InstantiateConfiguration(operatorCfg)
 }
 
 // Ensure AddPodIndexersToManager satisfies the ManagerFunc type.
